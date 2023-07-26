@@ -156,3 +156,83 @@ class MultiHash:
         for m in self.ms:
             digest[m.name] = m.hexdigest()
         return digest
+
+### io_helper
+import tempfile
+import io
+import os
+import hashlib
+#from hash_helper import hash_file
+
+class SafeWriter:
+    DIGEST_ALG = "md5"
+
+    def __init__(self, path, mode="w", encoding=None):
+        if mode != "w" or mode != "wb":
+            ValueError("mode must be \"w\" or \"wb\"")
+        if mode == "w":
+            if encoding:
+                self.encoding = encoding
+            else:
+                self.encoding = "utf-8"
+        else:
+            self.encoding = None
+        self.path = path
+        self.commited = False
+        (fd, temppath) = tempfile.mkstemp(prefix=path, dir=".")
+        self.tempfile = io.open(fd, mode="wb")
+        self.temppath = temppath
+        self.hash = hashlib.new(self.DIGEST_ALG, usedforsecurity=False)
+
+    def write(self, data):
+        if self.commited:
+            raise AssertionError("cannot write after commit")
+        if self.encoding:
+            data = data.encode(encoding=self.encoding)
+        self.hash.update(data)
+        return self.tempfile.write(data)
+
+    def commit(self):
+        self.tempfile.flush()
+        os.fsync(self.tempfile.fileno())
+        self.tempfile.close()
+        self.commited = True
+
+    def _validate(self):
+        expected = self.hash.hexdigest()
+        actual = hash_file(self.temppath, self.DIGEST_ALG)
+        if actual != expected:
+            raise AssertionError(f"failed to write to {self.temppath}")
+        return True
+
+    def _remove(self):
+        try:
+            os.unlink(self.temppath)
+        except Exception:
+            pass
+
+    def close(self):
+        if self.tempfile is None:
+            return
+        if self.commited and self._validate():
+            self.tempfile = None
+            try:
+                os.replace(self.temppath, self.path)
+            except Exception:
+                self._remove()
+                raise
+        else:
+            try:
+                self.tempfile.close()
+            finally:
+                self.tempfile = None
+                self._remove()
+            raise Exception(f"Failed to write {self.path}")
+
+    def __enter__(self):
+        if self.tempfile is None:
+            return None
+        return self
+
+    def __exit__(self, exc, value, tb):
+        self.close()

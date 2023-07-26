@@ -18,6 +18,8 @@
 
 import unittest
 import tempfile
+import os
+import io
 import filechecksums as fcs
 
 ### hash_helper
@@ -75,6 +77,41 @@ class MultiHashTestCase(unittest.TestCase):
         digest = m.hexdigest()
         self.assertEqual(digest.get('md5'), 'e2c865db4162bed963bfaa9ef6ac18f0')
         self.assertEqual(digest.get('sha256'), '40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880')
+
+### io_helper
+
+class SafeWriterTestCase(unittest.TestCase):
+    def test_write(self):
+        data = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+        path = tempfile.mktemp(suffix='.txt', prefix='fcs_test_')
+        try:
+            with fcs.SafeWriter(path) as f:
+                f.write(data)
+                f.commit()
+            with io.open(path, 'r') as f:
+                self.assertEqual(f.read(), data)
+        finally:
+            try:
+                os.unlink(path)
+            except:
+                pass
+
+    def test_write_no_commit(self):
+        data = b'0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+        path = tempfile.mktemp(suffix='.txt', prefix='fcs_test_')
+        try:
+            with io.open(path, 'wb') as f:
+                f.write(data)
+            with self.assertRaises(Exception):
+                with fcs.SafeWriter(path) as f:
+                    f.write('QWERTYUIOPASDFGHJKLXCVBNMqwertyuiopasdfghjklxcvbnm1234567890')
+            with io.open(path, 'rb') as f:
+                self.assertEqual(f.read(), data)
+        finally:
+            try:
+                os.unlink(path)
+            except:
+                pass
 
 if __name__ == '__main__':
     unittest.main()
