@@ -236,3 +236,122 @@ class SafeWriter:
 
     def __exit__(self, exc, value, tb):
         self.close()
+
+### ltsv
+import re
+
+class LTSV:
+    UNESCAPE_MAP = {"t":"\t","r":"\r","n":"\n","\\":"\\"}
+    ESCAPE_MAP = {v: k for k, v in UNESCAPE_MAP.items()}
+
+    @classmethod
+    def escape(cls, value):
+        return re.sub(r"(\\|\t|\r|\n)", lambda m: "\\"+cls.ESCAPE_MAP[m.group(1)], value)
+
+    @classmethod
+    def unescape(cls, value):
+        return re.sub(r"\\(t|r|n|\\)", lambda m: cls.UNESCAPE_MAP[m.group(1)], value)
+
+    @classmethod
+    def generate(cls, items):
+        line = ""
+        if type(items) is dict:
+            items = items.items()
+        for key, value in items:
+            line += "\t"+cls.generate_item(key, value)
+        return line[1:]
+
+    @classmethod
+    def generate_item(cls, key, value):
+        if ":" in key:
+            raise KeyError("Key must not contain colon")
+        return cls.escape(key)+":"+cls.escape(value)
+
+    @classmethod
+    def each(cls, line):
+        for item in line.split("\t"):
+            yield cls.parse_item(item)
+
+    @classmethod
+    def parse(cls, line):
+        return dict(cls.each(line))
+
+    @classmethod
+    def parse_item(cls, eitem):
+        ek, ev = eitem.split(":", 1)
+        k = cls.unescape(ek)
+        v = cls.unescape(ev)
+        return (k, v)
+
+class KeyValue():
+    KEY_ORDER = None
+
+    @classmethod
+    def is_array(cls, key):
+        return False
+
+    @classmethod
+    def sort_keys(cls, keys):
+        keys = list(keys)
+        keys.sort()
+        if cls.KEY_ORDER is not None:
+            for key in reversed(cls.KEY_ORDER):
+                try:
+                    keys.remove(key)
+                    keys.insert(0, key)
+                except ValueError:
+                    pass
+        return keys
+
+    @classmethod
+    def from_ltsv(cls, line):
+        instance = cls({})
+        line = line.rstrip("\n")
+        for k, v in LTSV.each(line):
+            instance.add(k, v)
+        return instance
+
+    def __init__(self, values):
+        if any(":" in key for key in values.keys()):
+            raise KeyError("Key must not contain colon")
+        self.values = values
+
+    def __contains__(self, key):
+        return key in self.values
+
+    def set(self, key, value):
+        if self.is_array(key) and type(value) is not list:
+            value = [value]
+        self.values[key] = value
+
+    def add(self, key, value):
+        if value is None:
+            value = ""
+        else:
+            value = str(value)
+        if ":" in key:
+            raise KeyError("Key must not contain colon")
+        if self.is_array(key):
+            self.values.setdefault(key, [])
+            self.values[key].append(value)
+        else:
+            self.values[key] = value
+
+    def merge(self, other):
+        for (k, v) in other:
+            self.add(k, v)
+
+    def get(self, key):
+        return self.values.get(key)
+
+    def to_ltsv(self):
+        return LTSV.generate(self)
+
+    def __iter__(self):
+        keys = self.sort_keys(self.values.keys())
+        for k in keys:
+            if self.is_array(k):
+                for v in self.values[k]:
+                    yield (k, v)
+            else:
+                yield (k, self.values[k])

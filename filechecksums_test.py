@@ -113,5 +113,62 @@ class SafeWriterTestCase(unittest.TestCase):
             except:
                 pass
 
+### ltsv
+
+class LTSVClassTestCase(unittest.TestCase):
+    def test_escape(self):
+        self.assertEqual(fcs.LTSV.escape('value'), 'value')
+        self.assertEqual(fcs.LTSV.escape('value\twith\ttabs'), 'value\\twith\\ttabs')
+        self.assertEqual(fcs.LTSV.escape('value with\n newlines\n'), 'value with\\n newlines\\n')
+        self.assertEqual(fcs.LTSV.escape('value \\with \\backslashes'), 'value \\\\with \\\\backslashes')
+        self.assertEqual(fcs.LTSV.escape('value \\with\tspecial\n chars'), 'value \\\\with\\tspecial\\n chars')
+        self.assertEqual(fcs.LTSV.escape('not \\tab nor \\newline'), 'not \\\\tab nor \\\\newline')
+
+    def test_unescape(self):
+        self.assertEqual(fcs.LTSV.unescape('value'), 'value')
+        self.assertEqual(fcs.LTSV.unescape('value\\twith\\ttabs'), 'value\twith\ttabs')
+        self.assertEqual(fcs.LTSV.unescape('value with\\n newlines\\n'), 'value with\n newlines\n')
+        self.assertEqual(fcs.LTSV.unescape('value \\\\with \\\\backslashes'), 'value \\with \\backslashes')
+        self.assertEqual(fcs.LTSV.unescape('value \\\\with\\tspecial\\n chars'), 'value \\with\tspecial\n chars')
+        self.assertEqual(fcs.LTSV.unescape('\\\\\\tab and \\\\\\newline'), '\\\tab and \\\newline')
+        self.assertEqual(fcs.LTSV.unescape('not \\\\tab nor \\\\newline'), 'not \\tab nor \\newline')
+
+    def test_each(self):
+        self.assertEqual(list(fcs.LTSV.each('k1:v1\tk2:v2\tk3:\\tv3')), [('k1', 'v1'), ('k2', 'v2'), ('k3', '\tv3')])
+
+    def test_parse(self):
+        self.assertEqual(fcs.LTSV.parse('k1:v1\tk2:v2\tk3:\\tv3'), {'k1':'v1', 'k2':'v2', 'k3':'\tv3'})
+
+    def test_generate(self):
+        self.assertEqual(fcs.LTSV.generate([('k1', 'v1'), ('k2', 'v2'), ('k3', '\tv3')]), 'k1:v1\tk2:v2\tk3:\\tv3')
+        self.assertEqual(fcs.LTSV.generate({'k1': 'v1', 'k2':'v2', 'k3':'\tv3'}), 'k1:v1\tk2:v2\tk3:\\tv3')
+
+
+class KeyValueTestMock(fcs.KeyValue):
+    KEY_ORDER = ['k1', 'nk3']
+
+    @classmethod
+    def is_array(cls, key):
+        return key == 'arr' or super().is_array(key)
+
+class KeyValueClassTestCase(unittest.TestCase):
+    def test_from_ltsv(self):
+        x = KeyValueTestMock.from_ltsv('k1:v1\tarr:e1\tk2:v2\tarr:e2')
+        self.assertEqual(x.get('k1'), 'v1')
+        self.assertEqual(x.get('k2'), 'v2')
+        self.assertEqual(x.get('arr'), ['e1', 'e2'])
+
+    def test_to_ltsv(self):
+        x = KeyValueTestMock({'k1':'v1', 'k2':'v2'})
+        x.add('arr', 'e1')
+        x.add('arr', 'e2')
+        self.assertEqual(x.to_ltsv(), 'k1:v1\tarr:e1\tarr:e2\tk2:v2')
+
+    def test_invalid_key(self):
+        self.assertRaises(KeyError, fcs.KeyValue, {"hash:md5": "0123456789abcdef0123456789abcdef"})
+        with self.assertRaises(KeyError):
+            kv = fcs.KeyValue({})
+            kv.add("hash:md5", "0123456789abcdef0123456789abcdef")
+
 if __name__ == '__main__':
     unittest.main()
