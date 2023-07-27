@@ -170,5 +170,42 @@ class KeyValueClassTestCase(unittest.TestCase):
             kv = fcs.KeyValue({})
             kv.add("hash:md5", "0123456789abcdef0123456789abcdef")
 
+### pathutil
+
+class PathUtilTestCase(unittest.TestCase):
+    def test_glob_to_pattern(self):
+        self.assertEqual(fcs.PathUtil.glob_to_pattern('part'), '/part$')
+
+        self.assertEqual(fcs.PathUtil.glob_to_pattern('part*'), '/part[^/]*$')
+        self.assertEqual(fcs.PathUtil.glob_to_pattern('*part*'), '/[^/]*part[^/]*$')
+
+        self.assertEqual(fcs.PathUtil.glob_to_pattern('/part'), '^/part$')
+        self.assertEqual(fcs.PathUtil.glob_to_pattern('/part*'), '^/part[^/]*$')
+        self.assertEqual(fcs.PathUtil.glob_to_pattern('/*part*'), '^/[^/]*part[^/]*$')
+
+        self.assertEqual(fcs.PathUtil.glob_to_pattern('/part/'), '^/part/')
+        self.assertEqual(fcs.PathUtil.glob_to_pattern('/part*/'), '^/part[^/]*/')
+        self.assertEqual(fcs.PathUtil.glob_to_pattern('/*part*/'), '^/[^/]*part[^/]*/')
+
+    def test_match(self):
+        self.assertEqual(fcs.PathUtil.match('part', 'xyz/part'), True)
+        self.assertEqual(fcs.PathUtil.match('part', 'xyz/part/'), False)
+        self.assertEqual(fcs.PathUtil.match('part', 'xyz/part.ext'), False)
+
+        self.assertEqual(fcs.PathUtil.match('part*', 'xyz/part'), True)
+        self.assertEqual(fcs.PathUtil.match('part*', 'xyz/part/'), False)
+        self.assertEqual(fcs.PathUtil.match('part*', 'xyz/part.ext'), True)
+
+        self.assertEqual(fcs.PathUtil.match('*part', 'xyz/part'), True)
+        self.assertEqual(fcs.PathUtil.match('*part', 'xyz/prepart'), True)
+
+        self.assertEqual(fcs.PathUtil.match('pa*rt', 'xyz/part'), True)
+        self.assertEqual(fcs.PathUtil.match('pa*rt', 'xyz/pamidrt'), True)
+        self.assertEqual(fcs.PathUtil.match('pa*rt', 'pa/rt'), False)
+
+class FileListerTestCase(unittest.TestCase):
+    # TODO: test FileLister (how?)
+    pass
+
 if __name__ == '__main__':
     unittest.main()

@@ -355,3 +355,75 @@ class KeyValue():
                     yield (k, v)
             else:
                 yield (k, self.values[k])
+
+### pathutil
+import os
+import re
+
+class PathUtil:
+    @classmethod
+    def glob_to_pattern(cls, glob):
+        if not isinstance(glob, str):
+            raise TypeError("glob must be str")
+        glob = re.escape(glob)
+        pattern = glob.replace("\\*", "[^/]*")
+        if pattern.startswith("/"):
+            pattern = "^"+pattern
+        else:
+            pattern = "/"+pattern
+        if pattern.endswith("/"):
+            pattern = pattern
+        else:
+            pattern = pattern+"$"
+        return pattern
+
+    @classmethod
+    def match(cls, glob_or_pattern, path):
+        if isinstance(glob_or_pattern, str):
+            pattern = re.compile(cls.glob_to_pattern(glob_or_pattern))
+        elif isinstance(glob_or_pattern, re.Pattern):
+            pattern = glob_or_pattern
+        else:
+            raise TypeError("glob_or_pattern must be str or Pattern object")
+        if type(path) is not str:
+            raise TypeError("path must be str")
+        if not path.startswith("/"):
+            path = "/"+path
+        return pattern.search(path) is not None
+
+class FileLister:
+    def __init__(self, dir, callback):
+        self.dir = dir
+        self.callback = callback
+
+    def _walk(self, dir):
+        try:
+            files = list(file for file in os.scandir(dir) if not file.is_symlink())
+        except BaseException as exc:
+            self.callback.error(exc, dir)
+            return
+        for file in files:
+            if file.is_dir():
+                if self.callback.should_recur(file, dir):
+                    for file, dir in self._walk(file.path):
+                        yield file, dir
+            elif file.is_file():
+                if self.callback.should_emit(file, dir):
+                    yield file, dir
+
+    def walk(self):
+        for file, dir in self._walk(self.dir):
+            self.callback.found(file, dir)
+
+    def __iter__(self):
+        return self._walk(self.dir)
+
+class FileListerCallback:
+    def should_recur(self, dir, parent_path):
+        return True
+    def should_emit(self, file, parent_path):
+        return True
+    def found(self, file, parent_path):
+        pass
+    def error(self, exc, path):
+        pass
