@@ -427,3 +427,145 @@ class FileListerCallback:
         pass
     def error(self, exc, path):
         pass
+
+### filechecksums.config
+import re
+#from pathutil import PathUtil, FileLister, FileListerCallback
+
+GLOBAL_EXCLUDES=[
+    "*.fcsstore",
+    ".git/",
+    ".svn/",
+    "__pycache__/",
+    "hiberfil*",
+    "pagefile*",
+    "System Volume Information/",
+    "lost+found/",
+    "RECYCLER/",
+    "RECYCLE/",
+]
+
+CHECKSUM_ALGS = [
+    "md5",
+    "sha256",
+]
+
+class FCSConfig(KeyValue):
+    @classmethod
+    def is_array(cls, key):
+        return \
+            key == "include" or \
+            key == "exclude" or \
+            key == "alg" or \
+            super().is_array(key)
+
+    @classmethod
+    def from_args(cls, args):
+        instance = cls({})
+        for p in args.includes or []:
+            instance.add("include", p)
+        for p in args.excludes or []:
+            instance.add("exclude", p)
+        for alg in args.algs or []:
+            instance.add("alg", alg)
+        return instance
+
+    def __init__(self, values):
+        super().__init__(values)
+        self.exclude_patterns = None
+        self.exclude_dirs = None
+        self.include_patterns = None
+        self.global_excludes = True
+
+    def excludes(self):
+        return self.values.get("exclude")
+
+    def includes(self):
+        return self.values.get("include")
+
+    def algs(self):
+        return self.values.get("alg")
+
+    def prepare_patterns(self):
+        excludes = []
+        if self.excludes() is not None:
+            excludes += self.excludes()
+        if self.global_excludes:
+            excludes += GLOBAL_EXCLUDES
+        if len(excludes) > 0:
+            self.exclude_patterns = [re.compile(PathUtil.glob_to_pattern(glob)) for glob in excludes]
+            self.exclude_dirs = []
+            pattern = re.compile("[^/]+/")
+            for glob in excludes:
+                if pattern.fullmatch(glob):
+                    self.exclude_dirs.append(re.compile(PathUtil.glob_to_pattern(glob)))
+        else:
+            self.exclude_patterns = None
+            self.exclude_dirs = None
+
+        includes = self.includes()
+        if includes is not None and len(includes) > 0:
+            self.include_patterns = [re.compile(PathUtil.glob_to_pattern(glob)) for glob in includes]
+        else:
+            self.include_patterns = None
+
+    def is_exclude_dir(self, name):
+        if self.exclude_dirs is None:
+            return False
+        for pattern in self.exclude_dirs:
+            if PathUtil.match(pattern, name):
+                return True
+        return False
+
+    def should_exclude(self, path):
+        if self.exclude_patterns is None:
+            return False
+        for pattern in self.exclude_patterns:
+            if PathUtil.match(pattern, path):
+                return True
+        return False
+
+    def should_include(self, path):
+        if self.include_patterns is None:
+            return True
+        for pattern in self.include_patterns:
+            if PathUtil.match(pattern, path):
+                return True
+        return False
+
+class FCSFiles(FileListerCallback):
+    def __init__(self, dir, config):
+        self.lister = FileLister(dir, self)
+        self.config = config
+        self.files = None
+
+    def should_recur(self, dir, parent_path):
+        path = dir.path
+        if self.config.should_exclude(path+"/"):
+            return False
+        return True
+
+    def should_emit(self, file, parent_path):
+        path = file.path
+        if self.config.should_exclude(path):
+            return False
+        if not self.config.should_include(path):
+            return False
+        return True
+
+    def found(self, file, parent_path):
+        self.files.append(file.path)
+
+    def error(self, exc, path):
+        raise
+
+    def build(self):
+        self.files = []
+        self.config.prepare_patterns()
+        self.lister.walk()
+
+    def __iter__(self):
+        if self.files is not None:
+            return iter(self.files)
+        self.config.prepare_patterns()
+        return (file.path for file, dir in self.lister)

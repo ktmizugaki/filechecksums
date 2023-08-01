@@ -207,5 +207,97 @@ class FileListerTestCase(unittest.TestCase):
     # TODO: test FileLister (how?)
     pass
 
+### filechecksums.config
+
+class FCSConfigArgsStub():
+    def __init__(self):
+        self.includes = None
+        self.excludes = None
+        self.algs = None
+
+class FCSConfigTestCase(unittest.TestCase):
+    def test_is_array(self):
+        self.assertTrue(fcs.FCSConfig.is_array('include'))
+        self.assertTrue(fcs.FCSConfig.is_array('exclude'))
+        self.assertTrue(fcs.FCSConfig.is_array('alg'))
+
+    def test_from_args_with_no_key(self):
+        args = FCSConfigArgsStub()
+        config = fcs.FCSConfig.from_args(args)
+        self.assertEqual(config.includes(), None)
+        self.assertEqual(config.excludes(), None)
+        self.assertEqual(config.algs(), None)
+
+    def test_from_args_with_all_keys(self):
+        args = FCSConfigArgsStub()
+        args.includes = ['/src/']
+        args.excludes = ['.svn/', '.git/']
+        args.algs = ['md5', 'sha256']
+        config = fcs.FCSConfig.from_args(args)
+        self.assertEqual(config.includes(), ['/src/'])
+        self.assertEqual(config.excludes(), ['.svn/', '.git/'])
+        self.assertEqual(config.algs(), ['md5', 'sha256'])
+
+    def test_from_ltsv(self):
+        config = fcs.FCSConfig.from_ltsv("alg:md5\talg:sha256\tinclude:/src/\texclude:.svn/\texclude:.git/")
+        self.assertEqual(config.includes(), ['/src/'])
+        self.assertEqual(config.excludes(), ['.svn/', '.git/'])
+        self.assertEqual(config.algs(), ['md5', 'sha256'])
+
+    def test_is_exclude_dir(self):
+        config = fcs.FCSConfig.from_ltsv("include:aaa/\texclude:bbb/")
+        config.prepare_patterns()
+        self.assertFalse(config.is_exclude_dir('aaa/'))
+        self.assertFalse(config.is_exclude_dir('bbb'))
+        self.assertTrue(config.is_exclude_dir('bbb/'))
+        self.assertTrue(config.is_exclude_dir('aaa/bbb/'))
+        config = fcs.FCSConfig.from_ltsv("include:aaa/\tinclude:bbb/")
+        config.global_excludes = False
+        config.prepare_patterns()
+        self.assertFalse(config.is_exclude_dir('aaa/'))
+        self.assertFalse(config.is_exclude_dir('bbb'))
+        self.assertFalse(config.is_exclude_dir('bbb/'))
+        self.assertFalse(config.is_exclude_dir('aaa/bbb/'))
+
+    def test_should_exclude(self):
+        config = fcs.FCSConfig.from_ltsv("include:aaa/\tinclude:xxx\texclude:bbb/\texclude:yyy")
+        config.prepare_patterns()
+        self.assertFalse(config.should_exclude('aaa/'))
+        self.assertFalse(config.should_exclude('xxx'))
+        self.assertTrue(config.should_exclude('bbb/'))
+        self.assertTrue(config.should_exclude('bbb/xxx'))
+        self.assertTrue(config.should_exclude('aaa/bbb/'))
+        self.assertTrue(config.should_exclude('yyy'))
+        self.assertTrue(config.should_exclude('aaa/yyy'))
+        config = fcs.FCSConfig.from_ltsv("include:aaa/\tinclude:xxx")
+        config.global_excludes = False
+        config.prepare_patterns()
+        self.assertFalse(config.should_exclude('aaa/'))
+        self.assertFalse(config.should_exclude('xxx'))
+        self.assertFalse(config.should_exclude('bbb/'))
+        self.assertFalse(config.should_exclude('yyy'))
+
+    def test_should_include(self):
+        config = fcs.FCSConfig.from_ltsv("include:aaa/\tinclude:xxx\texclude:bbb/\texclude:yyy")
+        config.prepare_patterns()
+        self.assertTrue(config.should_include('aaa/'))
+        self.assertTrue(config.should_include('aaa/yyy'))
+        self.assertTrue(config.should_include('bbb/aaa/'))
+        self.assertTrue(config.should_include('xxx'))
+        self.assertTrue(config.should_include('bbb/xxx'))
+        self.assertFalse(config.should_include('bbb/'))
+        self.assertFalse(config.should_include('yyy'))
+        config = fcs.FCSConfig.from_ltsv("exclude:aaa/\texclude:xxx")
+        config.global_excludes = False
+        config.prepare_patterns()
+        self.assertTrue(config.should_include('aaa/'))
+        self.assertTrue(config.should_include('xxx'))
+        self.assertTrue(config.should_include('bbb/'))
+        self.assertTrue(config.should_include('yyy'))
+
+class FCSFilesTestCase(unittest.TestCase):
+    # TODO: test FCSFiles (how?)
+    pass
+
 if __name__ == '__main__':
     unittest.main()
