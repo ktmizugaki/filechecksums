@@ -299,5 +299,113 @@ class FCSFilesTestCase(unittest.TestCase):
     # TODO: test FCSFiles (how?)
     pass
 
+### filechecksums.store
+
+class FCSHeaderTestCase(unittest.TestCase):
+    def test(self):
+        header = fcs.FCSHeader({'magic': 'test', 'alg': ['md5', 'sha256']})
+        self.assertEqual(header.get('magic'), 'FCSSTORE')
+        self.assertEqual(header.to_ltsv(), 'magic:FCSSTORE\talg:md5\talg:sha256')
+
+class FCSEntryTestCase(unittest.TestCase):
+    def test_init(self):
+        entry = fcs.FCSEntry({'path': 'aaa/xxx', 'size': 4096, 'mtime': 1676818800})
+        self.assertEqual(entry.path, 'aaa/xxx')
+        self.assertEqual(entry.size, 4096)
+        self.assertEqual(entry.mtime, 1676818800)
+
+    def test_from_ltsv(self):
+        entry = fcs.FCSEntry.from_ltsv('path:aaa/xxx\tsize:4096\tmtime:1676818800')
+        self.assertEqual(entry.path, 'aaa/xxx')
+        self.assertEqual(entry.size, 4096)
+        self.assertEqual(entry.mtime, 1676818800)
+
+    def test_from_path(self):
+        entry = fcs.FCSEntry.from_path('aaa/xxx')
+        self.assertEqual(entry.path, 'aaa/xxx')
+        self.assertEqual(entry.size, -1)
+        self.assertEqual(entry.mtime, 0)
+
+class FileCheckSumsClassTestCase(unittest.TestCase):
+    def test_is_fcsstore(self):
+        with tempfile.NamedTemporaryFile(suffix='.fcsstore', prefix='fcs_test_') as tmp:
+            tmp.write(b'magic:FCSSTORE\n')
+            tmp.flush()
+            self.assertTrue(fcs.FileCheckSums.is_fcsstore(tmp.name))
+        with tempfile.NamedTemporaryFile(suffix='.fcsstore', prefix='fcs_test_') as tmp:
+            tmp.write(b'magic:FCSSTORE\talg:md5\tinclude:/src/')
+            tmp.flush()
+            self.assertTrue(fcs.FileCheckSums.is_fcsstore(tmp.name))
+
+    def test_not_is_fcsstore(self):
+        with tempfile.NamedTemporaryFile(suffix='.fcsstore', prefix='fcs_test_') as tmp:
+            tmp.write(b'magic:FCSSTORE\n')
+            tmp.close()
+            self.assertFalse(fcs.FileCheckSums.is_fcsstore(tmp.name))
+        with tempfile.NamedTemporaryFile(suffix='.fcsstore', prefix='fcs_test_') as tmp:
+            tmp.write(b'magic:FCSSTORE\n')
+            tmp.flush()
+            os.chmod(tmp.name, 0o200)
+            self.assertFalse(fcs.FileCheckSums.is_fcsstore(tmp.name))
+
+    def test_load(self):
+        with tempfile.NamedTemporaryFile(suffix='.fcsstore', prefix='fcs_test_') as tmp:
+            tmp.write(b'magic:FCSSTORE\talg:md5\n')
+            tmp.write(b'md5:d41d8cd98f00b204e9800998ecf8427e\tsize:4096\tmtime:1676818800\tpath:aaa/xxx\n')
+            tmp.flush()
+            store = fcs.FileCheckSums.load(tmp.name)
+            self.assertEqual(store.config.algs(), ['md5'])
+            self.assertEqual(len(store.files), 1)
+
+    def test_load_config(self):
+        with tempfile.NamedTemporaryFile(suffix='.fcsstore', prefix='fcs_test_') as tmp:
+            tmp.write(b'magic:FCSSTORE\talg:md5\n')
+            tmp.write(b'md5:d41d8cd98f00b204e9800998ecf8427e\tsize:4096\tmtime:1676818800\tpath:aaa/xxx\n')
+            tmp.flush()
+            store = fcs.FileCheckSums.load_config(tmp.name)
+            self.assertEqual(store.config.algs(), ['md5'])
+            self.assertEqual(len(store.files), 0)
+
+    def test_non_writable_file(self):
+        with tempfile.NamedTemporaryFile(suffix='.fcsstore', prefix='fcs_test_') as tmp:
+            tmp.write(b'magic:FCSSTORE\talg:md5\n')
+            tmp.flush()
+            os.chmod(tmp.name, 0o400)
+            with self.assertRaises(ValueError):
+                store = fcs.FileCheckSums.load(tmp.name, readonly=False)
+            with self.assertRaises(ValueError):
+                store = fcs.FileCheckSums.load_config(tmp.name, readonly=False)
+
+    def test_non_writable_dir(self):
+        with tempfile.TemporaryDirectory(prefix='fcs_test_') as tmp:
+            path = tmp+"/.fcsstore"
+            with io.open(path, 'wb') as f:
+                f.write(b'magic:FCSSTORE\talg:md5\n')
+            os.chmod(tmp, 0o500)
+            with self.assertRaises(ValueError):
+                store = fcs.FileCheckSums.load(path, readonly=False)
+            with self.assertRaises(ValueError):
+                store = fcs.FileCheckSums.load_config(path, readonly=False)
+
+    def test_save(self):
+        pass
+
+    def test_save_config(self):
+        pass
+
+    def test_add_get_remove(self):
+        store = fcs.FileCheckSums('test.fcsstore')
+        store.add(fcs.FCSEntry({'path': 'aaa/yyy'}))
+        store.add(fcs.FCSEntry({'path': 'aaa/xxx3'}))
+        store.add(fcs.FCSEntry({'path': 'aaa/xxx1'}))
+        store.add(fcs.FCSEntry({'path': 'aaa/xxx2'}))
+        self.assertEqual(len(store.files), 4)
+        store.remove(store.files[3])
+        self.assertEqual(len(store.files), 3)
+        self.assertEqual(store.get('aaa/xxx1'), store.files[0])
+        self.assertEqual(store.get('aaa/xxx2'), store.files[1])
+        self.assertEqual(store.get('aaa/xxx3'), store.files[2])
+        pass
+
 if __name__ == '__main__':
     unittest.main()

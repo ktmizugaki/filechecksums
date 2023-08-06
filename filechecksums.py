@@ -569,3 +569,172 @@ class FCSFiles(FileListerCallback):
             return iter(self.files)
         self.config.prepare_patterns()
         return (file.path for file, dir in self.lister)
+
+### filechecksums.store
+
+import re
+import os
+import bisect
+#from filechecksums.config import FCSConfig
+
+class FCSHeader(FCSConfig):
+    MAGIC_KEY = "magic"
+    MAGIC_VALUE = "FCSSTORE"
+    MAGIC = MAGIC_KEY+":"+MAGIC_VALUE
+    KEY_ORDER = [MAGIC_KEY]
+
+    def __init__(self, values):
+        super().__init__(values)
+        self.set(self.MAGIC_KEY, self.MAGIC_VALUE)
+
+    def to_ltsv(self):
+        self.set(self.MAGIC_KEY, self.MAGIC_VALUE)
+        return super().to_ltsv()
+
+class FCSEntry(KeyValue):
+    STATE_NEW = 0
+    STATE_LOADED = 1
+    STATE_SAVED = 2
+    STATE_VERIFIED = 3
+    STATE_CHANGED = 4
+    KEY_ORDER = ["size", "mtime", "path"]
+
+    @classmethod
+    def sort_keys(cls, keys):
+        keys = super().sort_keys(keys)
+        for key in reversed(CHECKSUM_ALGS):
+            try:
+                keys.remove(key)
+                keys.insert(0, key)
+            except ValueError:
+                pass
+        return keys
+
+    def __init__(self, values):
+        super().__init__(values)
+        self.state = self.STATE_NEW
+        self.path = self.values.get("path", None)
+        self.size = self.values.get("size", -1)
+        self.mtime = self.values.get("mtime", 0)
+
+    def __eq__(self, other):
+        return self is other or self.path == other.path
+
+    def __lt__(self, other):
+        return self.path < other.path
+
+    @classmethod
+    def from_path(cls, path):
+        entry = cls({})
+        entry.add("path", path)
+        try:
+            stat = os.stat(path)
+            entry.add("size", stat.st_size)
+            entry.add("mtime", int(stat.st_mtime))
+        except IOError:
+            pass
+        return entry
+
+    def merge(self, other):
+        self.state = other.state
+        super().merge(other)
+
+    def add(self, key, value):
+        if key == "path":
+            self.path = value
+        elif key == "size":
+            self.size = int(value)
+        elif key == "mtime":
+            self.mtime = int(value)
+        super().add(key, value)
+
+class FileCheckSums:
+    DEFAULT_STORE = ".fcsstore"
+
+    @classmethod
+    def is_fcsstore(cls, path):
+        if not os.path.isfile(path):
+            return False
+        try:
+            with io.open(path, mode="r", newline="\n") as f:
+                line = f.readline()
+                return re.match(f"{FCSHeader.MAGIC}(\\t|\\n)", line) is not None
+        except IOError:
+            pass
+        return False
+
+    def __init__(self, path, readonly=False):
+        self.path = path
+        self.readonly = readonly
+        self.config = None
+        self.files = []
+
+    @classmethod
+    def load(cls, path, readonly=True):
+        base_dir = os.path.dirname(path) or "."
+        if not cls.is_fcsstore(path):
+            raise ValueError(f"path '{path}' is not file checksum store")
+        if not readonly and not os.access(path, os.W_OK):
+            raise ValueError(f"path '{path}' is not writable")
+        if not readonly and not os.access(base_dir, os.W_OK):
+            raise ValueError(f"dir '{base_dir}' is not writable")
+        instance = cls(path, readonly=readonly)
+        with io.open(path, mode="r", newline="\n") as f:
+            line = f.readline()
+            instance.config = FCSHeader.from_ltsv(line)
+            for line in f:
+                entry = FCSEntry.from_ltsv(line)
+                entry.state = FCSEntry.STATE_LOADED
+                instance.add(entry)
+        return instance
+
+    @classmethod
+    def load_config(cls, path, readonly=True):
+        base_dir = os.path.dirname(path) or "."
+        if not cls.is_fcsstore(path):
+            raise ValueError(f"path '{path}' is not file checksum store")
+        if not readonly and not os.access(path, os.W_OK):
+            raise ValueError(f"path '{path}' is not writable")
+        if not readonly and not os.access(base_dir, os.W_OK):
+            raise ValueError(f"dir '{base_dir}' is not writable")
+        instance = cls(path, readonly=readonly)
+        with io.open(path, mode="r", newline="\n") as f:
+            line = f.readline()
+            instance.config = FCSHeader.from_ltsv(line)
+        return instance
+
+    def save(self):
+        if self.readonly:
+            raise TypeError("attempt to save readonly instance")
+        with SafeWriter(self.path) as f:
+            f.write(self.config.to_ltsv()+"\n")
+            for entry in self.files:
+                f.write(entry.to_ltsv()+"\n")
+                entry.state = FCSEntry.STATE_SAVED
+            f.commit()
+
+    def save_config(self):
+        if self.readonly:
+            raise TypeError("attempt to save readonly instance")
+        with SafeWriter(self.path) as fout:
+            with io.open(self.path, mode="r", newline="\n") as fin:
+                # skip old config
+                fin.readline()
+                # write new config
+                fout.write(self.config.to_ltsv()+"\n")
+                # copy entries
+                for line in fin:
+                    fout.write(line)
+                fout.commit()
+
+    def get(self, path):
+        index = bisect.bisect_left(self.files, FCSEntry({"path": path}))
+        if index < len(self.files) and self.files[index].path == path:
+            return self.files[index]
+        return None
+
+    def add(self, entry):
+        bisect.insort(self.files, entry)
+
+    def remove(self, entry):
+        self.files.remove(entry)
