@@ -738,3 +738,280 @@ class FileCheckSums:
 
     def remove(self, entry):
         self.files.remove(entry)
+
+### filechecksums.cmd
+from abc import ABCMeta, abstractmethod
+import os
+import sys
+import argparse
+
+class FCSCmdBase(metaclass=ABCMeta):
+    @classmethod
+    @abstractmethod
+    def name(cls):
+        raise NotImplementedError("not implemented")
+
+    @classmethod
+    def isself(cls, name):
+        return cls.name() == name
+
+    @classmethod
+    @abstractmethod
+    def argparser(cls):
+        raise NotImplementedError("not implemented")
+
+    @classmethod
+    def add_verbose_arguments(cls, argparser, default=0):
+        argparser.add_argument(
+            "--verbose", "-v", dest="verbose",
+            action="count", default=default, help="output more message")
+        argparser.add_argument(
+            "--quiet", "-q", dest="quiet",
+            action="count", default=0, help="output less message")
+
+    @classmethod
+    def usage(cls):
+        return cls.argparser().format_usage()
+
+    def set_verbose(self, args):
+        self.verbose = args.verbose - args.quiet
+
+    def __init__(self, argv):
+        self.ui = lambda name, data: None
+        self.verbose = 0
+
+    @abstractmethod
+    def __call__(self):
+        raise NotImplementedError("not implemented")
+
+class FCSCmdInit(FCSCmdBase):
+    _argparser = None
+
+    @classmethod
+    def name(cls):
+        return "init"
+
+    @classmethod
+    def argparser(cls):
+        if cls._argparser is None:
+            cls._argparser = argparse.ArgumentParser(
+                prog = "init",
+                description="initialize file check file")
+            cls.add_verbose_arguments(cls._argparser)
+            cls._argparser.add_argument(
+                "--include", "-i", dest="includes", metavar="pattern",
+                action="append", help="pattern of files to be included")
+            cls._argparser.add_argument(
+                "--exclude", "-x", dest="excludes", metavar="pattern",
+                action="append", help="pattern of files to be excluded")
+            cls._argparser.add_argument(
+                "--alg", "-g", dest="algs", metavar="alg",
+                action="append", help="algorithms of checksum. defualt is md5 and sha256")
+            cls._argparser.add_argument(
+                "--force", "-f", dest="force",
+                action="store_true", help="overwrite existing file")
+            cls._argparser.add_argument(
+                "filename", metavar="file", nargs="?", default=FileCheckSums.DEFAULT_STORE)
+        return cls._argparser
+
+    def __init__(self, argv):
+        super().__init__(argv)
+        args = self.argparser().parse_args(argv)
+        self.set_verbose(args)
+        if args.algs is None:
+            args.algs = ["md5", "sha256"]
+        self.config = FCSHeader.from_args(args)
+        self.force = args.force
+        self.filename = args.filename
+
+    def __call__(self):
+        if os.path.isdir(self.filename):
+            self.ui("init.directory", self.filename)
+            sys.exit(2)
+        if os.path.lexists(self.filename):
+            if self.force:
+                self.ui("init.forceinit", self.filename)
+            elif FileCheckSums.is_fcsstore(self.filename):
+                self.ui("init.conflict", self.filename)
+                sys.exit(2)
+            else:
+                self.ui("init.invalid", self.filename)
+                sys.exit(2)
+        fcs = FileCheckSums(self.filename)
+        fcs.config = self.config
+        fcs.save()
+        self.ui("init.initialized", str(self.filename))
+
+class FCSCmdConfig(FCSCmdBase):
+    _argparser = None
+
+    @classmethod
+    def name(cls):
+        return "config"
+
+    @classmethod
+    def argparser(cls):
+        if cls._argparser is None:
+            cls._argparser = argparse.ArgumentParser(
+                prog = "config",
+                description="show or change configuration")
+            cls._argparser.add_argument(
+                "--add-include", dest="add_includes", metavar="pattern",
+                action="append", help="pattern of files to be included")
+            cls._argparser.add_argument(
+                "--remove-include", dest="remove_includes", metavar="pattern",
+                action="append", help="pattern of files to be included")
+            cls._argparser.add_argument(
+                "--add-exclude", dest="add_excludes", metavar="pattern",
+                action="append", help="pattern of files to be excluded")
+            cls._argparser.add_argument(
+                "--remove-exclude", dest="remove_excludes", metavar="pattern",
+                action="append", help="pattern of files to be excluded")
+            cls._argparser.add_argument(
+                "--add-alg", dest="add_algs", metavar="alg",
+                action="append", help="algorithms of checksum")
+            cls._argparser.add_argument(
+                "--remove-alg", dest="remove_algs", metavar="alg",
+                action="append", help="algorithms of checksum")
+            cls._argparser.add_argument(
+                "--dry-run", "-n", dest="dry_run",
+                action="store_true")
+            cls._argparser.add_argument(
+                "filename", metavar="file", nargs="?", default=FileCheckSums.DEFAULT_STORE)
+        return cls._argparser
+
+    def __init__(self, argv):
+        super().__init__(argv)
+        args = self.argparser().parse_args(argv)
+        self.operations = []
+        for p in args.add_includes or []:
+            self.operations.append(("add", "include", p))
+        for p in args.remove_includes or []:
+            self.operations.append(("remove", "include", p))
+        for p in args.add_excludes or []:
+            self.operations.append(("add", "exclude", p))
+        for p in args.remove_excludes or []:
+            self.operations.append(("remove", "exclude", p))
+        for p in args.add_algs or []:
+            self.operations.append(("add", "alg", p))
+        for p in args.remove_algs or []:
+            self.operations.append(("remove", "alg", p))
+        self.dry_run = args.dry_run
+        self.filename = args.filename
+
+    def __call__(self):
+        readonly = self.dry_run or not self.operations
+        fcs = FileCheckSums.load_config(self.filename, readonly=readonly)
+        for op, name, value in self.operations:
+            if op == "add":
+                fcs.config.add(name, value)
+                continue
+            if op == "remove":
+                values = fcs.config.get(name)
+                if values is None or len(values) == 0:
+                    continue
+                if type(values) is list:
+                    try:
+                        values.remove(value)
+                        fcs.config.set(name, values)
+                    except ValueError:
+                        self.ui("config.notexist", (name, value))
+                elif values == value:
+                    try:
+                        del fcs.config.values[name]
+                    except KeyError:
+                        pass
+                continue
+        if not readonly:
+            fcs.save_config()
+
+        self.ui("config.begin", str(self.filename))
+        for k, v in fcs.config:
+            if k == "magic":
+                continue
+            self.ui("config.show", (k, v))
+        self.ui("config.end", str(self.filename))
+
+### main
+import traceback
+import sys
+
+class FCSConsoleUI:
+    def __init__(self, verbose=0):
+        self.verbose = verbose
+
+    def log(self, *args):
+        print(*args, file=sys.stderr)
+
+    def output(self, *args):
+        print(*args, file=sys.stdout)
+
+    def __call__(self, name, data):
+        if name == "init.initialized":
+            self.log(f"created file checksum store: {data}")
+            return
+        if name == "init.directory":
+            self.log(f"'{data}' is directory")
+            return
+        if name == "init.forceinit":
+            self.log(f"overwrite '{data}'")
+            return
+        if name == "init.conflict":
+            self.log(f"'{data}' is already initialized")
+            return
+        if name == "init.invalid":
+            self.log(f"'{data}' exists and is not file checksum store")
+            return
+        if name == "config.begin":
+            self.output(f"{data}:")
+            return
+        if name == "config.end":
+            self.output()
+            return
+        if name == "config.show":
+            self.output(f"--{data[0]} {data[1]}")
+            return
+
+cmdclses = [
+    FCSCmdInit,
+    FCSCmdConfig,
+]
+
+uiclass = FCSConsoleUI
+
+def get_cmdcls(name):
+    for cls in cmdclses:
+        if cls.isself(name):
+            return cls
+    return None
+
+def main(argv):
+    try:
+        if len(argv) < 2:
+            print("not enough argument", file=sys.stderr)
+            sys.exit(1)
+
+        cls = get_cmdcls(argv[1])
+        if cls is None:
+            print("unknown command: "+argv[1], file=sys.stderr)
+            sys.exit(1)
+
+        cmd = cls(argv[2:])
+        cmd.ui = uiclass(verbose=cmd.verbose)
+        cmd()
+        sys.exit(0)
+
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        sys.exit(130)
+
+    except Exception:
+        if os.getenv("FCS_DEBUG") == "1":
+            limit = None
+        else:
+            limit = 0
+        traceback.print_exc(limit)
+        sys.exit(2)
+
+if __name__ == "__main__":
+    main(sys.argv)
