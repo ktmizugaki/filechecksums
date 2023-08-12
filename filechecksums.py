@@ -391,6 +391,31 @@ class PathUtil:
             path = "/"+path
         return pattern.search(path) is not None
 
+class PathMap:
+    @classmethod
+    def normalize(cls, path):
+        path = os.path.normpath(path)
+        if os.sep != '/':
+            path = path.replace(os.sep, '/')
+        return path
+
+    @classmethod
+    def to_real(cls, path, base_dir):
+        if base_dir == "":
+            raise ValueError(f"invalid base_dir: {base_dir}")
+        if base_dir is None:
+           return path
+        return os.path.join(base_dir, path).removeprefix("./")
+
+    @classmethod
+    def to_relative(cls, path, base_dir):
+        if base_dir == "" or base_dir is None:
+            raise ValueError(f"invalid base_dir: {base_dir}")
+        path = os.path.relpath(path, base_dir)
+        if path.startswith("../"):
+            raise Exception(f"path {path} is not under {base_dir}")
+        return path
+
 class FileLister:
     def __init__(self, dir, callback):
         self.dir = dir

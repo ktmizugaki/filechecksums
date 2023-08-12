@@ -203,6 +203,35 @@ class PathUtilTestCase(unittest.TestCase):
         self.assertEqual(fcs.PathUtil.match('pa*rt', 'xyz/pamidrt'), True)
         self.assertEqual(fcs.PathUtil.match('pa*rt', 'pa/rt'), False)
 
+class PathMapTestCase(unittest.TestCase):
+    def test_normalize(self):
+        self.assertEqual(fcs.PathMap.normalize('/'), '/')
+        self.assertEqual(fcs.PathMap.normalize('///'), '/')
+        self.assertEqual(fcs.PathMap.normalize('./'), '.')
+        self.assertEqual(fcs.PathMap.normalize(''), '.')
+        self.assertEqual(fcs.PathMap.normalize('./foo//'), 'foo')
+        self.assertEqual(fcs.PathMap.normalize('./foo//bar'), 'foo/bar')
+        self.assertEqual(fcs.PathMap.normalize('foo//bar'), 'foo/bar')
+
+    def test_to_real(self):
+        self.assertRaises(ValueError, fcs.PathMap.to_real, 'file', '')
+        self.assertEqual(fcs.PathMap.to_real('file', None), 'file')
+        self.assertEqual(fcs.PathMap.to_real('file', '.'), 'file')
+        self.assertEqual(fcs.PathMap.to_real('testdir/file', '.'), 'testdir/file')
+        self.assertEqual(fcs.PathMap.to_real('file', 'testdir'), 'testdir/file')
+        self.assertEqual(fcs.PathMap.to_real('subdir/file', 'testdir/'), 'testdir/subdir/file')
+        self.assertEqual(fcs.PathMap.to_real('subdir/file', '/'), '/subdir/file')
+        self.assertRaises(Exception, fcs.PathMap.to_relative, 'otherdir/testdir/file', 'testdir')
+
+    def test_to_relative(self):
+        self.assertEqual(fcs.PathMap.to_relative('testdir/file', './'), 'testdir/file')
+        self.assertEqual(fcs.PathMap.to_relative('./testdir/file', '.'), 'testdir/file')
+        self.assertEqual(fcs.PathMap.to_relative('testdir/file', 'testdir'), 'file')
+        self.assertEqual(fcs.PathMap.to_relative('testdir/file', 'testdir/'), 'file')
+        self.assertEqual(fcs.PathMap.to_relative('testdir/subdir/file', 'testdir'), 'subdir/file')
+        self.assertEqual(fcs.PathMap.to_relative('/subdir/file', '/'), 'subdir/file')
+        self.assertRaises(Exception, fcs.PathMap.to_relative, 'otherdir/testdir/file', 'testdir')
+
 class FileListerTestCase(unittest.TestCase):
     # TODO: test FileLister (how?)
     pass
