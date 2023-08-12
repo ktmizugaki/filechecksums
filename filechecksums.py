@@ -932,6 +932,251 @@ class FCSCmdConfig(FCSCmdBase):
             self.ui("config.show", (k, v))
         self.ui("config.end", str(self.filename))
 
+class UpdateStat:
+    def __init__(self):
+        self.add = 0
+        self.update = 0
+        self.downdate = 0
+        self.newalg = 0
+        self.remove = 0
+
+    def format_summary(self):
+        return f"""
+add...{self.add}
+update...{self.update}
+downdate...{self.downdate}
+remove...{self.remove}
+"""
+
+class FCSCmdUpdate(FCSCmdBase):
+    _argparser = None
+
+    @classmethod
+    def name(cls):
+        return "update"
+
+    @classmethod
+    def argparser(cls):
+        if cls._argparser is None:
+            cls._argparser = argparse.ArgumentParser(
+                prog = "update",
+                description="add/update file records")
+            cls.add_verbose_arguments(cls._argparser, default=1)
+            cls._argparser.add_argument(
+                "--update", dest="update",
+                action="store_true", help="recalc existing files if newer")
+            cls._argparser.add_argument(
+                "--downdate", dest="downdate",
+                action="store_true", help="recalc existing files if older")
+            cls._argparser.add_argument(
+                "--full", dest="full",
+                action="store_true", help="recalc existing files if chanegd. same as --update --downdate")
+            cls._argparser.add_argument(
+                "--prune", dest="prune",
+                action="store_true", help="remove non-existing files")
+            cls._argparser.add_argument(
+                "--dry-run", "-n", dest="dry_run",
+                action="store_true")
+            cls._argparser.add_argument(
+                "filename", metavar="file", nargs="?", default=FileCheckSums.DEFAULT_STORE)
+        return cls._argparser
+
+    def __init__(self, argv):
+        super().__init__(argv)
+        args = self.argparser().parse_args(argv)
+        self.set_verbose(args)
+        self.update = (args.update or args.full)
+        self.downdate = (args.downdate or args.full)
+        self.prune = args.prune
+        self.dry_run = args.dry_run
+        self.filename = args.filename
+        self.stat = UpdateStat()
+
+    def should_recalc(self, f, e, fcs):
+        if e is None:
+            return 'new'
+        if self.update and f.mtime > e.mtime:
+            return 'update'
+        if self.downdate and f.mtime < e.mtime:
+            return 'downdate'
+        if not all(alg in e for alg in fcs.config.algs()):
+            return 'newalg'
+        return None
+
+    def update_stat(self, reason):
+        if reason == 'new':
+            self.stat.add += 1
+        elif reason == 'update':
+            self.stat.update += 1
+        elif reason == 'downdate':
+            self.stat.downdate += 1
+        elif reason == 'newalg':
+            self.stat.newalg += 1
+
+    def process_file(self, f, e, fcs):
+        reason = self.should_recalc(f, e, fcs)
+        if reason:
+            self.update_stat(reason)
+            if reason == 'new':
+                self.ui("update.add", (reason, f.path))
+            else:
+                self.ui("update.recalc", (reason, f.path))
+            if not self.dry_run:
+                hexdigests = hash_file(f.path, MultiHash(*fcs.config.algs(), wantasync=f.size >= 1024*1024))
+                skip = False
+                if reason == 'newalg':
+                    skip = any(alg in e and e.get(alg) != hexdigests.get(alg) for alg in fcs.config.algs())
+                if skip:
+                    self.ui("update.fail", f.path)
+                else:
+                    for alg in fcs.config.algs():
+                        f.add(alg, hexdigests.get(alg))
+                    if e is None:
+                        fcs.add(f)
+                    else:
+                        e.merge(f)
+        else:
+            if e is not None:
+                self.ui("update.skip", f.path)
+
+        if e is None:
+            f.state = FCSEntry.STATE_CHANGED
+        else:
+            e.state = FCSEntry.STATE_CHANGED
+
+    def __call__(self):
+        fcs = FileCheckSums.load(self.filename, readonly=self.dry_run)
+        opts = FCSHeader({})
+        opts.merge(fcs.config)
+        opts.add("exclude", "/"+os.path.basename(self.filename))
+        base_dir = os.path.dirname(fcs.path) or "."
+        files = FCSFiles(base_dir, opts)
+        self.ui("update.listfiles.begin", base_dir)
+        files.build()
+        self.ui("update.listfiles.end", base_dir)
+        for file in files:
+            file = file.removeprefix("./")
+            f = FCSEntry.from_path(file)
+            e = fcs.get(f.path)
+            self.process_file(f, e, fcs)
+
+        if self.prune:
+            removed = [f for f in fcs.files if f.state == FCSEntry.STATE_LOADED]
+            for f in removed:
+                self.stat.remove += 1
+                self.ui("update.remove", f.path)
+                if not self.dry_run:
+                    fcs.remove(f)
+
+        if not self.dry_run:
+            fcs.save()
+
+        self.ui("update.stat", self.stat)
+
+class VerifyStat:
+    def __init__(self):
+        self.ok = 0
+        self.ng = 0
+        self.changed = 0
+        self.invalid = 0
+
+    def format_summary(self):
+        return f"""
+ok...{self.ok}
+NG...{self.ng}
+changed...{self.changed}
+invalid...{self.invalid}
+"""
+
+class FCSCmdVerify(FCSCmdBase):
+    _argparser = None
+
+    @classmethod
+    def name(cls):
+        return "verify"
+
+    @classmethod
+    def argparser(cls):
+        if cls._argparser is None:
+            cls._argparser = argparse.ArgumentParser(
+                prog = "verify",
+                description="verify file records")
+            cls.add_verbose_arguments(cls._argparser, default=1)
+            cls._argparser.add_argument(
+                "filename", metavar="file", nargs="?", default=FileCheckSums.DEFAULT_STORE)
+        return cls._argparser
+
+    def __init__(self, argv):
+        super().__init__(argv)
+        args = self.argparser().parse_args(argv)
+        self.set_verbose(args)
+        self.filename = args.filename
+        self.stat = VerifyStat()
+
+    def update_stat(self, reason):
+        if reason == 'ok':
+            self.stat.ok += 1
+        elif reason == 'ng':
+            self.stat.ng += 1
+        elif reason == 'changed':
+            self.stat.changed += 1
+        elif reason == 'invalid':
+            self.stat.ng += 1
+            self.stat.invalid += 1
+
+    def process_file(self, e, f, fcs):
+        path = f.path
+        if not os.path.isfile(path) or os.path.islink(path):
+            self.update_stat('invalid')
+            self.ui("verify.invalid_file", f)
+            return
+
+        if f.size == 0 and f.mtime == 0:
+            self.update_stat('invalid')
+            self.ui("verify.invalid_file", f)
+            return
+
+        self.ui("verify.start_file", e)
+        if self.changed(e, f):
+            self.update_stat('changed')
+
+        reason = 'ok'
+        try:
+            algs = fcs.config.algs()
+            hexdigests = hash_file(path, MultiHash(*algs, wantasync=f.size >= 1024*1024))
+            if any(hexdigests.get(alg) != e.get(alg) for alg in algs):
+                reason = 'ng'
+        except IOError:
+            reason = 'invalid'
+        except Exception:
+            reason = 'ng'
+
+        self.update_stat(reason)
+        if reason == 'ok':
+            result = 'ok'
+        else:
+            result = "NG"
+        self.ui("verify.end_file", (f, result))
+
+    def __call__(self):
+        fcs = FileCheckSums.load(self.filename)
+        try:
+            for e in fcs.files:
+                f = FCSEntry.from_path(e.path)
+                self.process_file(e, f, fcs)
+
+        finally:
+            self.ui("verify.stat", self.stat)
+
+    def changed(self, e, f):
+        if e is None or f is None:
+            return True
+        if e.mtime != f.mtime:
+            return True
+        if e.size != f.size:
+            return True
+        return False
+
 ### main
 import traceback
 import sys
@@ -946,7 +1191,7 @@ class FCSConsoleUI:
     def output(self, *args):
         print(*args, file=sys.stdout)
 
-    def __call__(self, name, data):
+    def oninit(self, name, data):
         if name == "init.initialized":
             self.log(f"created file checksum store: {data}")
             return
@@ -962,6 +1207,8 @@ class FCSConsoleUI:
         if name == "init.invalid":
             self.log(f"'{data}' exists and is not file checksum store")
             return
+
+    def onconfig(self, name, data):
         if name == "config.begin":
             self.output(f"{data}:")
             return
@@ -972,9 +1219,69 @@ class FCSConsoleUI:
             self.output(f"--{data[0]} {data[1]}")
             return
 
+    def onupdate(self, name, data):
+        if name == "update.listfiles.begin":
+            sys.stdout.write("Building file list..")
+        if name == "update.listfiles.end":
+            sys.stdout.write("\r                        \r")
+        if name == "update.add":
+            if self.verbose >= 1:
+                self.output(f"add {data[1]}")
+            return
+        if name == "update.recalc":
+            if self.verbose >= 1:
+                self.output(f"recalc {data[1]}")
+            return
+        if name == "update.skip":
+            if self.verbose >= 2:
+                self.output(f"skip {data}")
+            return
+        if name == "update.remove":
+            if self.verbose >= 1:
+                self.output(f"remove {data}")
+            return
+        if name == "update.fail":
+            if self.verbose >= 1:
+                self.output(f"failed {data}")
+            return
+        if name == "update.stat":
+            self.output(data.format_summary().rstrip("\n"))
+            return
+
+    def onverify(self, name, data):
+        if name == "verify.invalid_file":
+            if self.verbose >= 1:
+                self.output(f"not file: {data.path}")
+            return
+        if name == "verify.start_file":
+            if self.verbose >= 1:
+                sys.stdout.write(f"verify {data.path}...")
+            return
+        if name == "verify.end_file":
+            if self.verbose >= 1:
+                self.output(f"{data[1]}")
+            elif data[1] == 'NG':
+                self.output(f"{data[0].path}...{data[1]}")
+            return
+        if name == "verify.stat":
+            self.output(data.format_summary().rstrip("\n"))
+            return
+
+    def __call__(self, name, data):
+        if name.startswith("init."):
+            self.oninit(name, data)
+        if name.startswith("config."):
+            self.onconfig(name, data)
+        if name.startswith("update."):
+            self.onupdate(name, data)
+        if name.startswith("verify."):
+            self.onverify(name, data)
+
 cmdclses = [
     FCSCmdInit,
     FCSCmdConfig,
+    FCSCmdUpdate,
+    FCSCmdVerify,
 ]
 
 uiclass = FCSConsoleUI
