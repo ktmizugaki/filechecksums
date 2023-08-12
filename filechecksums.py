@@ -1267,6 +1267,15 @@ class FCSConsoleUI:
             self.output(data.format_summary().rstrip("\n"))
             return
 
+    def onhelp(self, name, data):
+        if name == "help.usage":
+            if data[1] is None:
+                self.output(data[0])
+            else:
+                self.log(data[1]+"\n")
+                self.log(data[0])
+            return
+
     def __call__(self, name, data):
         if name.startswith("init."):
             self.oninit(name, data)
@@ -1276,8 +1285,62 @@ class FCSConsoleUI:
             self.onupdate(name, data)
         if name.startswith("verify."):
             self.onverify(name, data)
+        if name.startswith("help."):
+            self.onhelp(name, data)
+
+class FCSCmdHelp(FCSCmdBase):
+    _argparser = None
+
+    @classmethod
+    def name(cls):
+        return "help"
+
+    @classmethod
+    def argparser(cls):
+        if cls._argparser is None:
+            cls._argparser = argparse.ArgumentParser(
+                prog = "help",
+                description="show this help message")
+            cls._argparser.add_argument(
+                "cmdname", metavar="cmd", nargs="?")
+        return cls._argparser
+
+    def __init__(self, argv):
+        super().__init__(argv)
+        (args, _rest) = self.argparser().parse_known_args(argv)
+        self.cmdname = args.cmdname
+
+    def __call__(self):
+        if self.cmdname:
+            cls = get_cmdcls(self.cmdname)
+            if cls is None:
+                self.unknown_cmd(self.cmdname)
+
+            cmd = cls(["-h"])
+            cmd.ui = self.ui
+            cmd()
+
+        else:
+            self.usage()
+
+    def show_usage(self, message=None):
+        usage = "Available commands:\n"
+        for cls in cmdclses:
+            cmdusage = cls.usage()
+            usage += "  "+cmdusage.removeprefix("usage: ")
+
+        self.ui("help.usage", (usage.rstrip("\n"), message))
+
+    def unknown_cmd(self, cmdname):
+        self.show_usage(f"Unknown command: {cmdname}")
+        sys.exit(2)
+
+    def missing_cmd(self):
+        self.show_usage("Missing command")
+        sys.exit(2)
 
 cmdclses = [
+    FCSCmdHelp,
     FCSCmdInit,
     FCSCmdConfig,
     FCSCmdUpdate,
@@ -1295,13 +1358,17 @@ def get_cmdcls(name):
 def main(argv):
     try:
         if len(argv) < 2:
-            print("not enough argument", file=sys.stderr)
+            help = FCSCmdHelp([])
+            help.ui = uiclass(verbose=1)
+            help.missing_cmd()
             sys.exit(1)
 
         cls = get_cmdcls(argv[1])
         if cls is None:
-            print("unknown command: "+argv[1], file=sys.stderr)
-            sys.exit(1)
+            help = FCSCmdHelp([])
+            help.ui = uiclass(verbose=1)
+            help.unknown_cmd(argv[1])
+            sys.exit(2)
 
         cmd = cls(argv[2:])
         cmd.ui = uiclass(verbose=cmd.verbose)
