@@ -418,7 +418,7 @@ class PathMap:
 
 class FileLister:
     def __init__(self, dir, callback):
-        self.dir = dir
+        self.dir = PathMap.normalize(dir)
         self.callback = callback
 
     def _walk(self, dir):
@@ -455,7 +455,7 @@ class FileListerCallback:
 
 ### filechecksums.config
 import re
-#from pathutil import PathUtil, FileLister, FileListerCallback
+#from pathutil import PathUtil, PathMap, FileLister, FileListerCallback
 
 GLOBAL_EXCLUDES=[
     "*.fcsstore",
@@ -564,14 +564,17 @@ class FCSFiles(FileListerCallback):
         self.config = config
         self.files = None
 
+    def mappath(self, path):
+        return PathMap.to_relative(PathMap.normalize(path), self.lister.dir)
+
     def should_recur(self, dir, parent_path):
-        path = dir.path
+        path = self.mappath(dir.path)
         if self.config.should_exclude(path+"/"):
             return False
         return True
 
     def should_emit(self, file, parent_path):
-        path = file.path
+        path = self.mappath(file.path)
         if self.config.should_exclude(path):
             return False
         if not self.config.should_include(path):
@@ -579,7 +582,7 @@ class FCSFiles(FileListerCallback):
         return True
 
     def found(self, file, parent_path):
-        self.files.append(file.path)
+        self.files.append(self.mappath(file.path))
 
     def error(self, exc, path):
         raise
@@ -593,13 +596,14 @@ class FCSFiles(FileListerCallback):
         if self.files is not None:
             return iter(self.files)
         self.config.prepare_patterns()
-        return (file.path for file, dir in self.lister)
+        return (self.mappath(file.path) for file, dir in self.lister)
 
 ### filechecksums.store
 
 import re
 import os
 import bisect
+#from pathutil import PathMap
 #from filechecksums.config import FCSConfig
 
 class FCSHeader(FCSConfig):
@@ -635,8 +639,9 @@ class FCSEntry(KeyValue):
                 pass
         return keys
 
-    def __init__(self, values):
+    def __init__(self, values, base_dir=None):
         super().__init__(values)
+        self.base_dir = base_dir
         self.state = self.STATE_NEW
         self.path = self.values.get("path", None)
         self.size = self.values.get("size", -1)
@@ -649,16 +654,25 @@ class FCSEntry(KeyValue):
         return self.path < other.path
 
     @classmethod
-    def from_path(cls, path):
-        entry = cls({})
+    def from_path(cls, path, base_dir=None):
+        entry = cls({}, base_dir)
         entry.add("path", path)
         try:
-            stat = os.stat(path)
+            stat = os.stat(entry.realpath())
             entry.add("size", stat.st_size)
             entry.add("mtime", int(stat.st_mtime))
         except IOError:
             pass
         return entry
+
+    @classmethod
+    def from_ltsv(cls, line, base_dir=None):
+        instance = super().from_ltsv(line)
+        instance.base_dir = base_dir
+        return instance
+
+    def realpath(self):
+        return PathMap.to_real(self.path, self.base_dir)
 
     def merge(self, other):
         self.state = other.state
@@ -696,7 +710,7 @@ class FileCheckSums:
 
     @classmethod
     def load(cls, path, readonly=True):
-        base_dir = os.path.dirname(path) or "."
+        base_dir = PathMap.normalize(os.path.dirname(path))
         if not cls.is_fcsstore(path):
             raise ValueError(f"path '{path}' is not file checksum store")
         if not readonly and not os.access(path, os.W_OK):
@@ -708,14 +722,14 @@ class FileCheckSums:
             line = f.readline()
             instance.config = FCSHeader.from_ltsv(line)
             for line in f:
-                entry = FCSEntry.from_ltsv(line)
+                entry = FCSEntry.from_ltsv(line, base_dir)
                 entry.state = FCSEntry.STATE_LOADED
                 instance.add(entry)
         return instance
 
     @classmethod
     def load_config(cls, path, readonly=True):
-        base_dir = os.path.dirname(path) or "."
+        base_dir = PathMap.normalize(os.path.dirname(path))
         if not cls.is_fcsstore(path):
             raise ValueError(f"path '{path}' is not file checksum store")
         if not readonly and not os.access(path, os.W_OK):
@@ -769,6 +783,7 @@ from abc import ABCMeta, abstractmethod
 import os
 import sys
 import argparse
+#from pathutil import PathMap
 
 class FCSCmdBase(metaclass=ABCMeta):
     @classmethod
@@ -1074,14 +1089,13 @@ class FCSCmdUpdate(FCSCmdBase):
         opts = FCSHeader({})
         opts.merge(fcs.config)
         opts.add("exclude", "/"+os.path.basename(self.filename))
-        base_dir = os.path.dirname(fcs.path) or "."
+        base_dir = PathMap.normalize(os.path.dirname(fcs.path))
         files = FCSFiles(base_dir, opts)
         self.ui("update.listfiles.begin", base_dir)
         files.build()
         self.ui("update.listfiles.end", base_dir)
         for file in files:
-            file = file.removeprefix("./")
-            f = FCSEntry.from_path(file)
+            f = FCSEntry.from_path(file, base_dir)
             e = fcs.get(f.path)
             self.process_file(f, e, fcs)
 
@@ -1187,7 +1201,7 @@ class FCSCmdVerify(FCSCmdBase):
         fcs = FileCheckSums.load(self.filename)
         try:
             for e in fcs.files:
-                f = FCSEntry.from_path(e.path)
+                f = FCSEntry.from_path(e.realpath())
                 self.process_file(e, f, fcs)
 
         finally:
