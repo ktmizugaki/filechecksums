@@ -1224,6 +1224,115 @@ class FCSCmdVerify(FCSCmdBase):
             return True
         return False
 
+class FCSCmdExport(FCSCmdBase):
+    _argparser = None
+
+    @classmethod
+    def name(cls):
+        return "export"
+
+    @classmethod
+    def argparser(cls):
+        if cls._argparser is None:
+            cls._argparser = argparse.ArgumentParser(
+                prog = "export",
+                description="export store to another format")
+            cls.add_verbose_arguments(cls._argparser, default=1)
+            cls._argparser.add_argument(
+                "--format", "-f", dest="fmt", required=True,
+                choices=['ltsv', 'csv', 'md5sum', 'sha256sum'],
+                help="format of resulting data")
+            cls._argparser.add_argument(
+                "--delimiter", "-d", dest="delim",
+                help="(csv) delimiter string")
+            cls._argparser.add_argument(
+                "--items", dest="items",
+                help="(csv,ltsv) colon-separated-list of keys to be exported")
+            cls._argparser.add_argument(
+                "--header", dest="header",
+                action="store_true", help="(csv) include keys as header (default)", default=True)
+            cls._argparser.add_argument(
+                "--no-header", dest="header",
+                action="store_false", help="do not add header")
+            cls.add_file_arguments(cls._argparser)
+        return cls._argparser
+
+    def __init__(self, argv):
+        super().__init__(argv)
+        args = self.argparser().parse_args(argv)
+        self.set_verbose(args)
+        self.format = args.fmt
+        if self.format == "ltsv" or self.format == "csv":
+            if args.items is None:
+                print(self.argparser().format_usage()+f"export: error: the following arguments are required: --items for --format={self.format}", file=sys.stderr)
+                sys.exit(2)
+            self.algs = []
+            self.items = args.items.split(":")
+            if self.format == "ltsv":
+                self.header = False
+                self.delim = "\t"
+            elif self.format == "csv":
+                self.header = args.header
+                self.delim = args.delim or ","
+        elif self.format == "md5sum":
+            self.format = "gnusum"
+            self.algs = ["md5"]
+            self.items = ["md5", "path"]
+            self.header = args.header
+            self.delim = "  "
+        elif self.format == "sha256sum":
+            self.format = "gnusum"
+            self.algs = ["sha256"]
+            self.items = ["sha256", "path"]
+            self.header = args.header
+            self.delim = "  "
+        self.filename = args.filename
+
+    def __call__(self):
+        fcs = FileCheckSums.load(self.filename)
+        fcsalgs = fcs.config.algs()
+        missing = [alg for alg in self.algs if alg not in fcsalgs]
+        if missing:
+            raise KeyError(f"alg {missing[0]} is missing in file checksum store")
+        if self.header:
+            if self.format == "ltsv":
+                line = ""
+            elif self.format == "csv":
+                line = self.delim.join([self.escape_csv(k) for k in self.items])
+            elif self.format == "gnusum":
+                abspath = os.path.abspath(self.filename)
+                line = f"# Generated from {abspath}"
+            self.ui('export.header', (self.filename, line))
+
+        for f in fcs.files:
+            if self.format == "ltsv":
+                line = LTSV.generate((k, f.get(k)) for k in self.items if k in f)
+            elif self.format == "csv":
+                line = self.delim.join([self.escape_csv(f.get(k)) for k in self.items])
+            elif self.format == "gnusum":
+                line = self.format_gnusum(f.get(self.items[0]), f.path)
+            self.ui('export.entry', (f, line))
+
+    def escape_csv(self, value):
+        if value is None:
+            return ''
+        if value == '':
+            return '""'
+        if '"' in value:
+            return '"'+value.replace('"', '""')+'"'
+        if any(ch in value for ch in [self.delim, "\r", "\n"]):
+            return '"'+value+'"'
+        else:
+            return value
+
+    def format_gnusum(self, digest, path):
+        if digest is None:
+            digest = "#missing checksum";
+        if any(ch in path for ch in ["\\", "\n"]):
+            digest = "\\"+digest
+            path = path.replace("\\", "\\\\").replace("\n", "\\n")
+        return digest+"  "+path;
+
 ### main
 import traceback
 import sys
@@ -1314,6 +1423,14 @@ class FCSConsoleUI:
             self.output(data.format_summary().rstrip("\n"))
             return
 
+    def onexport(self, name, data):
+        if name == "export.header":
+            self.output(data[1])
+            return
+        if name == "export.entry":
+            self.output(data[1])
+            return
+
     def onhelp(self, name, data):
         if name == "help.usage":
             if data[1] is None:
@@ -1332,6 +1449,8 @@ class FCSConsoleUI:
             self.onupdate(name, data)
         if name.startswith("verify."):
             self.onverify(name, data)
+        if name.startswith("export."):
+            self.onexport(name, data)
         if name.startswith("help."):
             self.onhelp(name, data)
 
@@ -1392,6 +1511,7 @@ cmdclses = [
     FCSCmdConfig,
     FCSCmdUpdate,
     FCSCmdVerify,
+    FCSCmdExport,
 ]
 
 uiclass = FCSConsoleUI
