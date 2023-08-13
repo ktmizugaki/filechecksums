@@ -785,6 +785,12 @@ import sys
 import argparse
 #from pathutil import PathMap
 
+class StorePathAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if os.path.isdir(values):
+            values = os.path.join(values, self.default)
+        setattr(namespace, self.dest, values)
+
 class FCSCmdBase(metaclass=ABCMeta):
     @classmethod
     @abstractmethod
@@ -808,6 +814,12 @@ class FCSCmdBase(metaclass=ABCMeta):
         argparser.add_argument(
             "--quiet", "-q", dest="quiet",
             action="count", default=0, help="output less message")
+
+    @classmethod
+    def add_file_arguments(cls, argparser, default=FileCheckSums.DEFAULT_STORE):
+        argparser.add_argument(
+            "filename", metavar="file", nargs="?",
+            action=StorePathAction, default=default)
 
     @classmethod
     def usage(cls):
@@ -850,8 +862,7 @@ class FCSCmdInit(FCSCmdBase):
             cls._argparser.add_argument(
                 "--force", "-f", dest="force",
                 action="store_true", help="overwrite existing file")
-            cls._argparser.add_argument(
-                "filename", metavar="file", nargs="?", default=FileCheckSums.DEFAULT_STORE)
+            cls.add_file_arguments(cls._argparser)
         return cls._argparser
 
     def __init__(self, argv):
@@ -916,8 +927,7 @@ class FCSCmdConfig(FCSCmdBase):
             cls._argparser.add_argument(
                 "--dry-run", "-n", dest="dry_run",
                 action="store_true")
-            cls._argparser.add_argument(
-                "filename", metavar="file", nargs="?", default=FileCheckSums.DEFAULT_STORE)
+            cls.add_file_arguments(cls._argparser)
         return cls._argparser
 
     def __init__(self, argv):
@@ -1017,8 +1027,7 @@ class FCSCmdUpdate(FCSCmdBase):
             cls._argparser.add_argument(
                 "--dry-run", "-n", dest="dry_run",
                 action="store_true")
-            cls._argparser.add_argument(
-                "filename", metavar="file", nargs="?", default=FileCheckSums.DEFAULT_STORE)
+            cls.add_file_arguments(cls._argparser)
         return cls._argparser
 
     def __init__(self, argv):
@@ -1141,8 +1150,7 @@ class FCSCmdVerify(FCSCmdBase):
                 prog = "verify",
                 description="verify file records")
             cls.add_verbose_arguments(cls._argparser, default=1)
-            cls._argparser.add_argument(
-                "filename", metavar="file", nargs="?", default=FileCheckSums.DEFAULT_STORE)
+            cls.add_file_arguments(cls._argparser)
         return cls._argparser
 
     def __init__(self, argv):
